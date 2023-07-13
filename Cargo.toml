@@ -1,0 +1,6 @@
+[package]
+rust-version = "1.73"
+name = "armventure"
+version = "0.1.0"
+edition = "2021"
+include = ["/src/**/*"]
