@@ -4,3 +4,7 @@ name = "armventure"
 version = "0.1.0"
 edition = "2021"
 include = ["/src/**/*"]
+
+[dependencies]
+displaydoc = "0.2.4"
+thiserror = "1.0.43"
