@@ -2,4 +2,5 @@
     "rust-analyzer.linkedProjects": [
         "./Cargo.toml",
     ],
+    "crates.localCargoIndexHash": "index.crates.io-6f17d22bba15001f"
 }
