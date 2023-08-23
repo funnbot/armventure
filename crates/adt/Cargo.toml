@@ -1,0 +1,10 @@
+[package]
+name = "adt"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+
+[dependencies]
+adt_internal_items = { version = "*", path = "./adt_internal_items" }
+adt_internal_macros = { version = "*", path = "./adt_internal_macros" }

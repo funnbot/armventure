@@ -1,28 +1,14 @@
-// <https://sabrinajewson.org/blog/the-better-alternative-to-lifetime-gats>
-pub trait PeekLifetime<'this, ImplicitBounds: Sealed = Bounds<&'this Self>> {
-    type PeekItem: Copy;
-}
-
-mod sealed {
-    pub trait Sealed: Sized {}
-    pub struct Bounds<T>(T);
-    impl<T> Sealed for Bounds<T> {}
-}
-use sealed::{Bounds, Sealed};
-
-pub type PeekItem<'this, T> = <T as PeekLifetime<'this>>::PeekItem;
-
-pub trait Stream: for<'this> PeekLifetime<'this> {
+pub trait Stream {
     type Item;
 
     fn next(&mut self) -> Option<Self::Item>;
-    fn peek(&self) -> Option<PeekItem<'_, Self>>;
+    fn peek(&self) -> Option<&Self::Item>;
 
     fn next_if_eq<I>(&mut self, item: I) -> Option<Self::Item>
     where
-        for<'this> PeekItem<'this, Self>: PartialEq<I>,
+        Self::Item: PartialEq<I>,
     {
-        if self.peek()? == item {
+        if *self.peek()? == item {
             self.next()
         } else {
             None
@@ -30,7 +16,7 @@ pub trait Stream: for<'this> PeekLifetime<'this> {
     }
     fn next_if<Pred>(&mut self, pred: Pred) -> Option<Self::Item>
     where
-        Pred: FnOnce(PeekItem<'_, Self>) -> bool,
+        Pred: FnOnce(&Self::Item) -> bool,
     {
         if pred(self.peek()?) {
             self.next()
@@ -40,7 +26,7 @@ pub trait Stream: for<'this> PeekLifetime<'this> {
     }
     fn next_while<Pred>(&mut self, mut pred: Pred) -> usize
     where
-        Pred: FnMut(PeekItem<'_, Self>) -> bool,
+        Pred: FnMut(&Self::Item) -> bool,
     {
         let mut count: usize = 0;
         while let Some(item) = self.peek() {
@@ -63,43 +49,39 @@ pub trait Stream: for<'this> PeekLifetime<'this> {
         }
         n
     }
+    fn map_if<T, Pred>(&mut self, pred: Pred) -> Option<T>
+    where
+        Pred: FnOnce(&Self::Item) -> Option<T>,
+    {
+        let output = pred(self.peek()?)?;
+        self.next();
+        Some(output)
+    }
 }
 
-// TODO:
-// macro_rules! impl_stream_for {
-//     ($type:ty) => {
-//         impl<'this, 's> $crate::
-//         impl $crate::Stream for $type
-//     };
-// }
-
-// impl<'this, 's> PeekLifetime<'this> for SourceIterator<'s> {
-//     type PeekItem = char;
-// }
-
-// impl<'s> Stream for SourceIterator<'s> {
-//     type Item = char;
-
-//     fn peek(&self) -> Option<char> {
-//         self.current
-//     }
-//     fn next(&mut self) -> Option<char> {
-//         let c = self.peek()?;
-//         self.current = self.inner.next();
-
-//         // works with \r\n
-//         if c == '\n' {
-//             self.location.inc_line();
-//         } else {
-//             self.location.inc_column();
-//         }
-//         Some(c)
-//     }
-// }
-
-pub trait MultiPeek: Stream
-where
-    Self::Item: Clone,
-{
+pub trait MultiPeek: Stream {
     fn peek_by(&self, n: usize) -> Option<Self::Item>;
+}
+
+// pub trait AdapterInner<S: Stream> {
+//     fn get_inner(&self) -> &S;
+// }
+// pub trait AdapterInnerMut<S: Stream> {
+//     fn get_inner(&mut self) -> &mut S;
+// }
+// impl<S: Stream + AdapterInnerMut<S>> AdapterInner<S> for S {
+//     fn get_inner(&self) -> &S {
+//         self.get_inner()
+//     }
+// }
+pub trait AdapterToInner<S: Stream> {
+    fn to_inner(self) -> S;
+}
+pub trait IterAsInner<I: Iterator> {
+    fn to_inner(self) -> I;
+}
+impl<'s> IterAsInner<std::slice::Iter<'s, u8>> for std::str::CharIndices<'s> {
+    fn to_inner(self) -> std::slice::Iter<'s, u8> {
+        self.as_str().as_bytes().iter()
+    }
 }

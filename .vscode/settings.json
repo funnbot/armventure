@@ -2,5 +2,7 @@
     "rust-analyzer.linkedProjects": [
         "./Cargo.toml",
     ],
-    "crates.localCargoIndexHash": "index.crates.io-6f17d22bba15001f"
+    "rust-analyzer.notifications.cargoTomlNotFound": false,
+    "crates.localCargoIndexHash": "index.crates.io-6f17d22bba15001f",
+    "rust-analyzer.showUnlinkedFileNotification": false
 }

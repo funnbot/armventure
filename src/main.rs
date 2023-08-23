@@ -1,7 +1,6 @@
 use std::{fs, io, path::Path};
 
 use armventure::assembler;
-use armventure::scan;
 
 // pub mod assembler;
 // pub mod multipeekable;
