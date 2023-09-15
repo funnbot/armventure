@@ -1,0 +1,16 @@
+[package]
+name = "instr_set_internal_macros"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+proc-macro2 = { version = "*", features = ["nightly"] }
+syn = { version = "*" }
+quote = "*"
+instr_set_internal_items = { version = "*", path = "./../instr_set_internal_items" }
+
+[lib]
+proc_macro = true

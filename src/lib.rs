@@ -12,23 +12,35 @@
 #![feature(nonzero_ops)]
 #![feature(char_indices_offset)]
 #![feature(exhaustive_patterns)]
-#![feature(const_trait_impl)]
 #![feature(let_chains)]
 #![feature(associated_type_bounds)]
 #![feature(pointer_is_aligned)]
-//#![feature(generic_const_exprs)]
+#![feature(min_specialization)]
+#![feature(unchecked_math)]
+#![feature(test)]
+#![feature(decl_macro)]
+#![feature(associated_type_defaults)]
+#![feature(effects)]
+// #![feature(inherent_associated_types)]
+// #![feature(generic_const_exprs)]
+// #![feature(portable_simd)]
+#![cfg_attr(test, allow(warnings))]
+
+extern crate test;
 
 pub mod assembler;
 //pub mod diag;
 pub mod probably;
 //pub mod scan;
 pub mod inst;
-pub mod num;
 pub mod stream;
 
-mod bitwriter;
-mod code_file;
+mod addr;
+mod bitstack;
+mod code;
 mod code_stream;
-mod resolve;
+mod elf;
+mod enum_str;
+mod intern;
 mod sparsebin;
 mod unwrap_macro;

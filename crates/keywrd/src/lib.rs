@@ -1,4 +1,6 @@
 #![feature(proc_macro_diagnostic)]
+// TODO: temporary
+#![allow(warnings)]
 
 extern crate proc_macro;
 use proc_macro::{
@@ -6,7 +8,7 @@ use proc_macro::{
 };
 
 #[derive(Debug)]
-enum Error {
+pub(crate) enum Error {
     Duplicate,
 }
 impl std::fmt::Display for Error {
@@ -34,7 +36,7 @@ fn unquote_str(str: String) -> Option<String> {
 mod seq_tree {
     use super::{Error, Result};
 
-    pub enum Node {
+    pub(crate) enum Node {
         Branch(u8, Vec<Node>),
         Leaf,
     }
@@ -61,7 +63,7 @@ mod seq_tree {
         Ok(())
     }
 
-    pub struct Tree {
+    pub(crate) struct Tree {
         root: Vec<Node>,
     }
 

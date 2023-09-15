@@ -4,5 +4,6 @@
     ],
     "rust-analyzer.notifications.cargoTomlNotFound": false,
     "crates.localCargoIndexHash": "index.crates.io-6f17d22bba15001f",
-    "rust-analyzer.showUnlinkedFileNotification": false
+    "rust-analyzer.showUnlinkedFileNotification": false,
+    "discord.enabled": true
 }

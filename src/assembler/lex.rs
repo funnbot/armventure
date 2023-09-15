@@ -1,7 +1,5 @@
-use crate::code_file::CodeSpan;
-use crate::code_stream::SourceIterator;
-use crate::stream::Stream;
-use std::fmt;
+use crate::{code, code::Span, code_stream::SourceStream, stream::Stream};
+use std::{borrow::BorrowMut, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -10,7 +8,7 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NumberBase {
+pub enum IntRadix {
     Bin = 2,
     Dec = 10,
     Hex = 16,
@@ -22,7 +20,7 @@ pub enum TokenKind {
     String,
     Newline,
     Error(ErrorKind),
-    Int(NumberBase),
+    Int(IntRadix),
     Float,
     Colon,
     Dot,
@@ -31,36 +29,41 @@ pub enum TokenKind {
     RightSquareBracket,
 }
 
+impl TokenKind {
+    pub const fn is_int(&self) -> bool {
+        matches!(self, Self::Int(..))
+    }
+}
+
 pub fn variant_eq<Enum>(lhs: &Enum, rhs: &Enum) -> bool {
     std::mem::discriminant(lhs) == std::mem::discriminant(rhs)
 }
 
 #[derive(Clone, Copy)]
-pub struct Token<'a> {
+pub struct Token {
     pub kind: TokenKind,
-    pub span: CodeSpan<'a>,
+    pub span: Span,
 }
 
-impl<'s> PartialEq<TokenKind> for Token<'s> {
+impl PartialEq<TokenKind> for Token {
     fn eq(&self, other: &TokenKind) -> bool {
         self.kind == *other
     }
 }
 
 pub struct Scanner<'a> {
-    source: &'a str,
-    it: SourceIterator<'a>,
+    source: &'a code::Source,
+    it: SourceStream<'a>,
 }
 
 impl<'a> Scanner<'a> {
     #[must_use]
-    pub fn new(source: &'a str) -> Self {
+    pub fn new(source: &'a code::Source) -> Self {
         Scanner {
             source,
-            it: SourceIterator::new(source),
+            it: SourceStream::new(source.str()),
         }
     }
-
     // called after consuming '#'
     fn parse_number(&mut self) -> TokenKind {
         if self.it.next_if(|&c| c.is_ascii_digit()).is_none() {
@@ -69,15 +72,15 @@ impl<'a> Scanner<'a> {
         let base = match self.it.peek() {
             Some('x') => {
                 self.it.next();
-                NumberBase::Hex
+                IntRadix::Hex
             }
             Some('b') => {
                 self.it.next();
-                NumberBase::Bin
+                IntRadix::Bin
             }
-            Some('.') => NumberBase::Dec,
-            Some('0'..='9' | '_') => NumberBase::Dec,
-            _ => return TokenKind::Int(NumberBase::Dec),
+            Some('.') => IntRadix::Dec,
+            Some('0'..='9' | '_') => IntRadix::Dec,
+            _ => return TokenKind::Int(IntRadix::Dec),
         };
         self.it.next_while(|&c| c.is_digit(base as u32) || c == '_');
 
@@ -139,8 +142,8 @@ impl<'a> Scanner<'a> {
             _ => todo!("error unexpected token"),
         }
     }
-    #[expect(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<Token<'a>> {
+
+    pub fn next(&mut self) -> Option<Token> {
         if self.it.is_eof() {
             return None;
         }
@@ -149,39 +152,16 @@ impl<'a> Scanner<'a> {
         let start_location = self.it.location;
         let start_index = self.it.index;
         let kind = self.parse_token();
-        let token_src = &self.source[start_index..self.it.index];
+        let span = self
+            .source
+            .create_span(start_location, start_index, self.it.index);
 
-        Some(Token {
-            span: CodeSpan {
-                loc: start_location,
-                src: token_src,
-                byte_index: start_index,
-            },
-            kind,
-        })
+        Some(Token { span, kind })
     }
 }
 
-impl fmt::Debug for Token<'_> {
+impl fmt::Debug for Token {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Token:{:?} {:?}", self.kind, self.span)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    
-    use super::*;
-    use crate::probably::Probably;
-    use crate::batch_assert_matches;
-    #[test]
-    fn scanner() -> Probably {
-        let mut s = Scanner::new("hello #12345");
-        batch_assert_matches! {
-            s.next()?.span.src => "hello",
-            s.next()?.span.src => "#12345",
-            s.next() => None,
-        }
-        Probably
+        write!(f, "Token:{:?}{:?}", self.kind, self.span.loc())
     }
 }

@@ -1,38 +1,23 @@
-macro_rules! stringify2 {
-    ($literal:literal) => {
-        $literal
-    };
-    ($tt:tt) => {
-        stringify!($tt)
-    };
-}
-
-macro_rules! comp_error {
-    ($($tt:tt),+) => {
-        compile_error!(concat!(
-            $(stringify2!($tt)),+
-        ))
-    };
-}
-
 macro_rules! __def_mnemonic {
     {$( $mnem:ident )+} => {
-        pub enum Mnemonic {
-            $( $mnem ),+
-        }
-        impl std::str::FromStr for Mnemonic {
-            type Err = ();
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
-                let hash = $crate::inst::util::str_hash(s);
-                $(
-                if $crate::inst::util::str_hash( stringify!( $mnem ) ) == hash {
-                    return Ok( Mnemonic:: $mnem );
-                }
-                )+
-                Err(())
+        $crate::enum_str! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub enum Mnemonic {
+                $( $mnem ),+
             }
         }
-    }
+    };
+}
+
+macro_rules! _def_dec_instr {
+    {
+        $mnem:ident $inst:ident $( $variant:ident )?
+        ( $( $arg_name:ident $arg_opts:tt )* )
+        ( $( $enc_name:ident $enc_opts:tt $( : $enc_idx:tt )? )* )
+    } => {
+        #[allow(non_camel_case_types)]
+        pub struct $inst (u32);
+    };
 }
 
 macro_rules! __def_inst_type {
@@ -42,58 +27,44 @@ macro_rules! __def_inst_type {
         ( $( $enc_name:ident $enc_opts:tt $( : $enc_idx:tt )? )* )
     } => {
         #[allow(non_camel_case_types)]
-        pub struct $inst(
-        $(
-            _arg_type!($arg_name $arg_opts)
-        ),*
+        pub struct $inst (
+            $( _arg_type!($arg_name $arg_opts) ),*
         );
-        impl From<$inst> for InstrSet {
-            fn from(value: $inst) -> Self {
-                InstrSet::$inst(value)
-            }
-        }
-        impl Instruction for $inst {
+        impl super::EncInstr for $inst {
             const MNEM: super::Mnemonic = super::Mnemonic:: $mnem;
-            $( const VARIANT: Variant = Variant:: $variant; )?
+            $( const VARIANT: super::Variant = super::Variant:: $variant; )?
             const ARGS: &'static [$crate::inst::util::Param] = &[
-        $(
-                _arg_kind!($arg_name $arg_opts)
-        ),*
+                $( _arg_kind!($arg_name $arg_opts) ),*
             ];
-            #[allow(unused_mut, unused_variables)]
-            fn from_args<'a, A, I: Iterator>(mut iter: I) -> ::std::result::Result<Self, $crate::inst::ParseErrorIdx>
+
+            fn from_ops<'a, I>(mut iter: I) -> Self
             where
-                I: Iterator<Item = &'a A>,
-                A: $crate::inst::Arg,
-                A: 'a,
+                I: ::std::iter::Iterator<Item = &'a $crate::inst::operand::Ops>
             {
-                Ok(Self(
-        $(
-                    _arg_parse!($arg_name iter)
-                        .map_err(|e| $crate::inst::ParseErrorIdx(e, ${index()}))?
-        ),*
-                ))
+                Self(
+                    $( _arg_parse!($arg_name iter) ),*
+                )
             }
-            fn encode<E: $crate::inst::Emitter>(&self, e: &mut E) {
-                use $crate::inst::Emitter;
-                use $crate::inst::Encode;
+            fn emit<E: $crate::inst::Emitter>(&self, e: &mut E) -> ::std::result::Result<(), $crate::inst::ErrorMacro> {
                 use $crate::inst::operand::Encoder;
-                use $crate::inst::IntN;
+                use ::bit::IntN;
+                use $crate::inst::operand::enc;
                 e.begin_instr();
                 $(
-                    {
-                        $( let value = &self.$enc_idx; )?
-                        _arg_encode!($enc_name $enc_opts value e)
-                    }
-                    // {
-                    //     let value = {
-                    //         $( let value = &self.$enc_idx; )?
-                    //         _arg_encode!($enc_name $enc_opts value e)
-                    //     };
-                    //     e.push(value.encode());
-                    // }
+                    _arg_encode!( $enc_name $enc_opts self e $( $enc_idx )? )
+                        .map_err(|e| $crate::inst::ErrorMacro(e,
+                            concat!( stringify!($enc_name), stringify!($enc_opts) $(, stringify!( : $enc_idx ) )? )
+                        ))?;
                 )*
                 e.end_instr();
+                Ok(())
+            }
+        }
+        impl ::std::fmt::Debug for $inst {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(f, "{}", stringify!( $mnem ))?;
+                $( write!(f, "({}) ", stringify!( $variant ))?; )?
+                $crate::write_join!(f, "{:?}", ", " $(, ${ignore(arg_name)} self. ${index()} )* )
             }
         }
     };
@@ -111,44 +82,79 @@ macro_rules! __def_insts {
         ;
     )+
     } => {
-        $(  $( // mnem, variant
-            __def_inst_type!{
-                $mnem $inst $($variant)? ( $($args)* ) ( $($encode)* )
-            }
-        )+  )+
+
+        pub trait EncInstr
+        where
+            Self: Sized + ::std::fmt::Debug,
+        {
+            const MNEM: Mnemonic;
+            const VARIANT: Variant = Variant::Default;
+            const VARIANTS: &'static [Variant] = &[Self::VARIANT];
+            const ARGS: &'static [$crate::inst::util::Param];
+
+            fn from_ops<'a, I>(iter: I) -> Self
+            where
+                I: ::std::iter::Iterator<Item = &'a $crate::inst::operand::Ops>;
+            fn emit<E: $crate::inst::Emitter>(&self, e: &mut E) -> ::std::result::Result<(), $crate::inst::ErrorMacro>;
+        }
+
+        pub mod enc {
+            use $crate::inst::meta::*;
+
+            $(  $( // mnem, variant
+                __def_inst_type!{ $mnem $inst $($variant)? ( $($args)* ) ( $($encode)* ) }
+            )+  )+
+        }
+
+        pub mod dec {
+            use $crate::inst::meta::*;
+
+            $( $(
+                _def_dec_instr!{ $mnem $inst $($variant)? ( $($args)* ) ( $($encode)* ) }
+            )+ )+
+        }
 
         #[allow(non_camel_case_types)]
-        pub enum InstrSet {
-        $(  $(
-            $inst($inst),
-        )+  )+
+        pub enum EncInstrSet {
+            $(  $(
+                $inst($crate::inst::def::enc:: $inst),
+            )+  )+
         }
 
-        pub fn emit_instr<E: $crate::inst::Emitter>(instr: InstrSet, e: &mut E) {
-            match instr {
-        $(  $(
-                InstrSet::$inst(i) => i.encode(e),
-        )+  )+
+        pub fn narrow_variant(mnem: Mnemonic) -> $crate::inst::NarrowVariant {
+            match mnem {
+            $(
+                Mnemonic:: $mnem => {
+                    $( debug_assert!($crate::inst::util::rest_are_opt(enc:: $inst :: ARGS)); )+
+                    $crate::inst::NarrowVariant::new(&[
+                        $( enc:: $inst :: ARGS ),+
+                    ])
+                }
+            ),+
             }
         }
 
-        pub fn parse_variant<'a, I, A>(mnem: super::Mnemonic, iter: I) -> ::std::result::Result<Option<InstrSet>, $crate::inst::ParseErrorIdx>
+        pub fn get_variant_and_emit<'a, I, E>(mnem: Mnemonic, variant_idx: usize, iter: I, e: &mut E)
+            -> ::std::result::Result<(), $crate::inst::ErrorMacro>
             where
-                I: Iterator<Item = &'a A> + Clone,
-                A: $crate::inst::Arg,
-                A: 'a
-        {
+                E: $crate::inst::Emitter,
+                I: Iterator<Item = &'a $crate::inst::operand::Ops> + Clone,
+            {
             match mnem {
-        $( // mnem
-                super::Mnemonic:: $mnem => {
-            $( // variant
-                    if $crate::inst::util::is_variant(iter.clone(), $inst :: ARGS) {
-                        return Ok(Some(<$inst as Instruction>::from_args(iter)?.into()))
+            $(
+                Mnemonic:: $mnem => {
+                    match variant_idx {
+                    $(
+                        ${index()} => {
+                            let instr = <$crate::inst::def::enc:: $inst as EncInstr>::from_ops(iter.clone());
+                            println!("{:#010X}: {:?}", e.pc(), instr);
+                            return instr.emit(e);
+                        }
+                    ),+
+                        _ => ::std::unreachable!(),
                     }
-            )+
-                    Ok(None)
                 }
-        ),+
+            ),+
             }
         }
     }
@@ -166,27 +172,7 @@ macro_rules! def_instrs {
     } => {
         __def_mnemonic!{ $( $mnem )+ }
 
-        pub mod parse {
-        use $crate::inst::meta::*;
-        use super::Variant;
-
-        pub trait Instruction
-        where
-            Self: Sized,
-        {
-            const MNEM: super::Mnemonic;
-            const VARIANT: Variant = Variant::Default;
-            const ARGS: &'static [$crate::inst::util::Param];
-
-            fn from_args<'a, A, I: Iterator>(iter: I) -> ::std::result::Result<Self, $crate::inst::ParseErrorIdx>
-            where
-                I: Iterator<Item = &'a A>,
-                A: $crate::inst::Arg,
-                A: 'a;
-            fn encode<E: $crate::inst::Emitter>(&self, e: &mut E);
-        }
-
-        paste! {
+        ::paste::paste! {
             __def_insts!{
                 $(
                     $mnem : $(
@@ -197,12 +183,56 @@ macro_rules! def_instrs {
                 )+
             }
         }
+    }
+}
 
+macro_rules! def_directs {
+    { $( $name:ident ( $( $arg_name:ident $arg_opts:tt ),* ) ),* $(,)? } => {
+        enum_str! {
+            #[allow(non_camel_case_types)]
+            pub enum Name {
+                $( $name, )*
+            }
+        }
+
+        pub fn narrow_variant(name: Name) -> $crate::inst::NarrowVariant {
+            match name {
+            $(
+                Name:: $name => {
+                    const EXPECT: &'static [$crate::inst::util::Param] =
+                        &[ $( $crate::inst::meta_operand::_arg_kind!($arg_name $arg_opts) )* ];
+
+                    debug_assert!($crate::inst::util::rest_are_opt(EXPECT));
+
+                    $crate::inst::NarrowVariant::new(&[ EXPECT ])
+                }
+            ),+
+            }
+        }
+
+        pub fn select_and_run<'a, E: Emitter, I>(e: &mut E, mut iter: I) -> std::result::Result<(), $crate::inst::dir::Error>
+            where I: Iterator<Item = &'a Ops> + Clone,
+        {
+            $(
+                {
+                    const EXPECT: &'static [$crate::inst::util::Param] =
+                        &[ $( $crate::inst::meta_operand::_arg_kind!($arg_name $arg_opts) )* ];
+                    if $crate::inst::util::is_variant(iter.clone(), EXPECT) {
+                        return $crate::inst::dir::def:: $name (e,
+                            $( $crate::inst::meta_operand::_arg_parse!($arg_name iter), )*
+                        );
+                    }
+                }
+            )*
+            todo!()
         }
     }
 }
 
 pub(super) use super::meta_operand::*;
-pub(super) use {
-    __def_inst_type, __def_insts, __def_mnemonic, comp_error, def_instrs, paste::paste, stringify2,
-};
+pub(super) use __def_inst_type;
+pub(super) use __def_insts;
+pub(super) use __def_mnemonic;
+pub(super) use _def_dec_instr;
+pub(super) use def_directs;
+pub(super) use def_instrs;

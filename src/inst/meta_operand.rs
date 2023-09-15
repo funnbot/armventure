@@ -1,92 +1,77 @@
 macro_rules! _arg_type_impl {
-    (Gpr()) => ($crate::inst::operand::Gpr);
-    (Gpr(AllowSp)) => ($crate::inst::operand::GprOrSp);
-    (Gpr(AllowZr)) => ($crate::inst::operand::GprOrZr);
-    (UImm( $bits:literal $( , $align:literal )? )) =>
-        ($crate::inst::operand::UImm<$bits $(, $align)?>);
-    (SImm( $bits:literal $( , $align:ident )? )) =>
-        ($crate::inst::operand::SImm<$bits $(, {$crate::inst::operand::AlignBits::$align as u8})?>);
-    (ShiftConst($kind:ident, $amt:literal)) =>
-        ($crate::inst::operand::ShiftConst<{$crate::inst::operand::ShiftKind::$kind as u8}, $amt>);
-    (Shift($bits:literal)) => ($crate::inst::operand::Shift<$bits>);
-    (Extend()) => ($crate::inst::operand::Extend);
-    // (Label(UImm($bits:literal $( , $align:literal )?))) =>
-    //     ($crate::inst::operand::LabelUImm<$bits $(, $align)?>);
-    // (Label(SImm($bits:literal $( , $align:literal )?))) =>
-    //     ($crate::inst::operand::LabelSImm<$bits $(, $align)?>);
-    (Label($kind:ident $opts:tt)) => {
-        $crate::inst::operand::op::Label<
-            $crate::inst::meta_operand::_arg_type_impl!($kind $opts) >
-    };
-    (Cond()) => ($crate::inst::operand::Cond);
-    ($ident:ident $opts:tt) => {
-        compile_error!("unknown argument");
+    ($name:ident ()) => {
+        $crate::inst::operand::op::$name
     };
 }
 
 macro_rules! _arg_encode_impl {
-    (B($binary:literal) $s:tt) => {
-        IntN(
-            $binary,
-            $crate::inst::util::binary_string(stringify!($binary)),
-        )
+    (Sf()) => {
+        enc::Sf
     };
-    (Sf(Gpr0) $s:tt) => {
-        IntN(($s.size == $crate::inst::operand::GprSize::B8) as u32, 1)
+    (Gpr()) => {
+        enc::Gpr
     };
-    (Arg()) => {
-        $crate::inst::operand::enc::Op
+    (Gpr(AllowSp)) => {
+        enc::GprOrSp
     };
-    (Arg(Kind)) => {
-        $crate::inst::operand::enc::OpKind
+    (Gpr(AllowZr)) => {
+        enc::GprOrZr
     };
-    (Gpr() $s:tt) => {
-        $s
+    (UImm($bits:literal, Align = $align:literal)) => {
+        enc::UImmAlign<$bits, $align>
     };
-    (UImm($idx:tt) $s:tt) => {
-        $s
+    (SImm($bits:literal, Align = $align:literal)) => {
+        enc::SImmAlign<$bits, $align>
     };
-    (SImm() $s:tt) => {
-        $s
+    (UImm($bits:literal)) => {
+        enc::UImm<$bits>
     };
-    (Shift(Kind($idx:tt)) $s:tt) => {
-        $s.kind
+    (SImm($bits:literal)) => {
+        enc::SImm<$bits>
     };
-    (Shift(Amount($idx:tt)) $s:tt) => {
-        $s.amount
+    (Shift(Kind)) => {
+        enc::ShiftKind
     };
-    (ShiftConst($idx:tt) $s:tt) => {
-        $s
+    (Shift(Amount($bits:literal))) => {
+        enc::ShiftAmount<$bits>
     };
-    (Extend(Kind($idx:tt)) $s:tt) => {
-        $s.kind
+    (ShiftConst($kind:ident, $amt:literal)) => {
+        enc::ShiftConst<{$crate::inst::operand::ShiftKind::$kind as u8}, $amt>
     };
-    (Extend(Shift($idx:tt)) $s:tt) => {
-        $s.lsl_amount
+    (Extend(Shift)) => {
+        enc::ExtendLShift
     };
     (Cond()) => {
-        $s
+        enc::Cond
+    };
+    (Label($name:ident $opts:tt)) => {
+        enc::Label<
+            $crate::inst::meta_operand::_arg_encode_impl!($name $opts),
+        >
     };
     ($ident:ident $opts:tt) => {
-        compile_error!("unknown encode argument");
+        compile_error!(concat!("unknown encode argument: ", stringify!($ident), stringify!($opts)));
     };
 }
 
 macro_rules! _arg_encode {
-    (PcRel($name:ident $opts:tt) $s:tt $e:tt) => {
-
-    };
     (B($binary:literal) $s:tt $e:tt) => {
-        $e.push(IntN(
+        Ok($e.push(IntN(
             $binary,
             $crate::inst::util::binary_string(stringify!($binary)),
-        ))
+        )))
     };
-    ($ident:ident $opts:tt $s:tt $e:tt) => {
-        {
-            let value = <$crate::inst::meta_operand::_arg_encode_impl!($ident $opts)>::encode($s, $e);
-            $e.push(value)
-        }
+    (Extend(Kind) $s:tt $e:tt $i:tt) => {
+        (|| {
+            enc::ExtendKind::valid_width(&$s.$i, &$s.2)?;
+            let value = enc::ExtendKind::encode(&$s.$i, $e)?;
+            $e.push_n(value);
+            Ok(())
+        })()
+    };
+    ($ident:ident $opts:tt $s:tt $e:tt $( $i:tt )?) => {
+        <$crate::inst::meta_operand::_arg_encode_impl!($ident $opts)>
+            ::encode(&$s.$($i)?, $e).map(|v| $e.push_n(v))
     }
 }
 
@@ -101,24 +86,25 @@ macro_rules! _arg_parse {
 
 macro_rules! _arg_kind {
     (Opt($name:ident $opts:tt)) => {
-        $crate::inst::util::Param::Opt(
-            <_arg_type_impl!($name $opts) as
-                $crate::inst::operand::Operand>::KIND)
+        $crate::inst::util::Param::Opt($crate::inst::operand::Kind::$name)
     };
     ($name:ident $opts:tt) => {
-        $crate::inst::util::Param::Req(
-            <_arg_type_impl!($name $opts) as
-                $crate::inst::operand::Operand>::KIND)
-    }
+        $crate::inst::util::Param::Req($crate::inst::operand::Kind::$name)
+    };
 }
 
 macro_rules! _arg_type {
     (Opt($name:ident $opts:tt)) => {
-        _arg_type_impl!($name $opts)
+        ::std::option::Option<$crate::inst::meta_operand::_arg_type_impl!($name $opts)>
     };
     ($name:ident $opts:tt) => {
         _arg_type_impl!($name $opts)
     }
 }
 
-pub(super) use {_arg_encode, _arg_encode_impl, _arg_kind, _arg_parse, _arg_type, _arg_type_impl};
+pub(super) use _arg_encode;
+pub(super) use _arg_encode_impl;
+pub(super) use _arg_kind;
+pub(super) use _arg_parse;
+pub(super) use _arg_type;
+pub(super) use _arg_type_impl;

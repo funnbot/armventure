@@ -1,0 +1,11 @@
+[package]
+name = "instr_set"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+
+[dependencies]
+instr_set_internal_items = { version = "*", path = "./instr_set_internal_items" }
+instr_set_internal_macros = { version = "*", path = "./instr_set_internal_macros" }

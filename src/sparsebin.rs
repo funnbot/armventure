@@ -1,10 +1,34 @@
+use bit::{BitCt, CreateMask};
 use rustc_hash::FxHashMap as HashMap;
+use std::{
+    cmp::{max, min},
+    io::BufRead,
+    iter::FusedIterator,
+    marker::PhantomData,
+    ops::{Index, IndexMut, Range},
+};
 
 const PAGE_BITS: u32 = 12;
 const PAGE_SIZE: usize = 2usize.pow(PAGE_BITS);
 
+type PageData = [u8; PAGE_SIZE];
+
+const ZERO_PAGE: Page = Page([0; PAGE_SIZE]);
+/// must never mutate
+unsafe fn zero_page_mut_ptr() -> *mut Page {
+    &ZERO_PAGE as *const Page as *mut Page
+}
+
+// TODO: use MaybeUninit and a length field to avoid zeroing the page
 #[repr(align(8))]
-struct Page([u8; PAGE_SIZE]);
+pub struct Page(PageData);
+
+impl Index<usize> for Page {
+    type Output = u8;
+    fn index(&self, addr: usize) -> &Self::Output {
+        unsafe { self.0.get_unchecked(extract_lo::<PAGE_BITS>(addr)) }
+    }
+}
 
 /// int with ALIGN number of low bits set to 0
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -25,10 +49,6 @@ impl<const ALIGN: usize> Aligned<ALIGN> {
     }
 }
 
-pub fn foo() {
-    let _ = Aligned::<8>(0);
-}
-
 impl Default for Page {
     #[inline]
     fn default() -> Self {
@@ -42,44 +62,123 @@ pub struct SparseBin {
     active_idx: usize,
 }
 
+struct SA {
+    index: usize,
+    offset: usize,
+}
+fn split_addr<T: Sized, const ALIGN: BitCt>(addr: usize) -> SA {
+    if ALIGN > 0 {
+        // comptime known
+        debug_assert!(2usize.pow(ALIGN) == std::mem::align_of::<T>());
+        debug_assert!(ALIGN <= 3, "ALIGN must be <= alignment of 8 bytes (3)");
+        // `Page` is guaranteed to be aligned to 8 bytes
+        debug_assert!(addr & usize::mask_lo_1s(ALIGN) == 0);
+    }
+
+    SA {
+        index: addr >> PAGE_BITS,
+        offset: extract_lo::<ALIGN>(addr),
+    }
+}
+
 impl SparseBin {
     pub fn new() -> Self {
         Self {
             pages: HashMap::default(),
-            active_page: std::ptr::null_mut(),
+            active_page: unsafe { zero_page_mut_ptr() },
             active_idx: usize::MAX,
         }
     }
 
-    fn page_mut(&mut self, index: usize) -> &mut Page {
-        if !self.active_page.is_null() && self.active_idx == index {
-            unsafe { &mut *self.active_page }
+    fn set_active_page(&mut self, index: usize, page: &mut Page) {
+        debug_assert!(index != usize::MAX);
+        self.active_idx = index;
+        self.active_page = page as *mut Page;
+    }
+    fn invalidate_active_page(&mut self) {
+        self.active_idx = usize::MAX;
+        self.active_page = unsafe { zero_page_mut_ptr() };
+    }
+
+    /// # Safety
+    /// `self.active_idx != usize::MAX`
+    unsafe fn active_page_mut(&mut self) -> &mut PageData {
+        debug_assert!(self.active_idx != usize::MAX);
+        &mut (*self.active_page).0
+    }
+    pub fn active_page(&self) -> &PageData {
+        unsafe { &(*self.active_page).0 }
+    }
+
+    // TODO: move to PageIter
+    fn page_or_zero(&self, index: usize) -> &PageData {
+        match self.pages.get(&index) {
+            Some(page) => &page.0,
+            None => &ZERO_PAGE.0,
+        }
+    }
+
+    // TODO: move to PageIter
+    fn page_unaligned_first(&self, addr: usize) -> (usize, &[u8]) {
+        let index = addr >> PAGE_BITS;
+        let offset = extract_lo::<PAGE_BITS>(addr);
+        if offset > 0 {
+            let page = self.page_or_zero(index);
+            // first index is the returned page, add one
+            unsafe { (index + 1, page.get_unchecked(offset..)) }
+        } else {
+            // first index inclusive
+            (index, &ZERO_PAGE.0[0..0])
+        }
+    }
+
+    // TODO: move to PageIter
+    fn page_unaligned_last(&self, addr: usize) -> (usize, &[u8]) {
+        let index = addr >> PAGE_BITS;
+        let offset = extract_lo::<PAGE_BITS>(addr);
+        if offset > 0 {
+            let page = self.page_or_zero(index);
+            // last index exclusive, doesn't need to be modified
+            unsafe { (index, page.get_unchecked(..offset)) }
+        } else {
+            // last index exclusive
+            (index, &ZERO_PAGE.0[0..0])
+        }
+    }
+
+    pub fn page_range_u8(&self, range: Range<usize>) -> (&[u8], PageRangeIter<'_>, &[u8]) {
+        let Range { start, end } = range;
+        assert!(start <= end);
+
+        let (start_idx, first) = self.page_unaligned_first(start);
+        let (end_idx, last) = self.page_unaligned_last(end);
+
+        (first, PageRangeIter::new(self, start_idx, end_idx), last)
+    }
+
+    fn page_entry_mut(&mut self, index: usize) -> &mut PageData {
+        if self.active_idx == index {
+            unsafe { self.active_page_mut() }
         } else {
             let page = self.pages.entry(index).or_default();
             self.active_page = page as *mut Page;
             self.active_idx = index;
-            page
+            unsafe { self.active_page_mut() }
         }
     }
 
-    fn page(&self, index: usize) -> Option<&Page> {
-        if !self.active_page.is_null() && self.active_idx == index {
-            unsafe { Some(&*self.active_page) }
+    fn try_page_entry(&mut self, index: usize) -> Option<&PageData> {
+        if self.active_idx == index {
+            Some(self.active_page())
         } else {
-            self.pages.get(&index)
+            self.pages.get(&index).map(|p| &p.0)
         }
     }
 
     unsafe fn write<T: Sized, const ALIGN: u32>(&mut self, addr: usize, value: T) {
-        debug_assert!(2usize.pow(ALIGN) == std::mem::align_of::<T>()); // comptime known
-        debug_assert!(ALIGN <= 3, "ALIGN must be <= alignment of 8 bytes (3)"); // comptime known
-
-        // `Page` is guaranteed to be aligned to 8 bytes
-        debug_assert!(addr & mask_lo::<ALIGN>() == 0);
-
-        // `PAGE_ALIGN` bits of `addr` are used as index to `Page` and guaranteed to be in range
-        let page = self.page_mut(addr >> PAGE_BITS);
-        let ptr = page.0.as_mut_ptr().add(extract_lo::<PAGE_BITS>(addr));
+        let SA { index, offset } = split_addr::<T, ALIGN>(addr);
+        let page = self.page_entry_mut(index);
+        let ptr = page.as_mut_ptr().add(extract_lo::<PAGE_BITS>(addr));
         let ptr_t = ptr.cast::<T>();
 
         debug_assert!(ptr_t.is_aligned());
@@ -91,28 +190,31 @@ impl SparseBin {
         todo!()
     }
 
-    unsafe fn get<T: Sized + Copy, const ALIGN: u32>(&self, addr: usize) -> Option<T> {
-        debug_assert!(2usize.pow(ALIGN) == std::mem::align_of::<T>()); // comptime known
-        debug_assert!(ALIGN <= 3, "ALIGN must be <= alignment of 8 bytes (3)"); // comptime known
+    /// get random access
+    /// won't change the active page
+    unsafe fn get_ra<T: Sized + Copy, const ALIGN: u32>(&self, addr: usize) -> T {
+        todo!()
+    }
+    /// get sequential
+    /// can change the active page
+    unsafe fn get_seq<T: Sized + Copy, const ALIGN: u32>(&mut self, addr: usize) -> T {
+        todo!()
+    }
 
-        // `Page` is guaranteed to be aligned to 8 bytes
-        debug_assert!(addr & mask_lo::<ALIGN>() == 0);
+    /// get if page exists 
+    unsafe fn try_get<T: Sized + Copy, const ALIGN: u32>(&mut self, addr: usize) -> Option<T> {
+        todo!()
+    }
 
-        // `PAGE_ALIGN` bits of `addr` are used as index to `Page` and guaranteed to be in range
-        let page = self.page(addr >> PAGE_BITS)?;
-        let ptr = page.0.as_ptr().add(extract_lo::<PAGE_BITS>(addr));
+    /// get sequential
+    unsafe fn get<T: Sized + Copy, const ALIGN: u32>(&mut self, addr: usize) -> T {
+        let SA { index, offset } = split_addr::<T, ALIGN>(addr);
+        let page = self.page_entry_mut(addr);
+        let ptr = page.as_ptr().add(extract_lo::<PAGE_BITS>(addr));
         let ptr_t = ptr.cast::<T>();
 
         debug_assert!(ptr_t.is_aligned());
-        Some(ptr_t.read())
-    }
-
-    pub fn write_slice_u8(&mut self, addr: usize, slice: &[u8]) {
-        let mut addr = addr;
-        for &value in slice {
-            self.write_u8(addr, value);
-            addr += 1;
-        }
+        ptr_t.read()
     }
 
     pub fn write_u8(&mut self, addr: usize, value: u8) {
@@ -127,35 +229,64 @@ impl SparseBin {
         unsafe { self.write::<u64, 3>(addr.0, value) };
     }
 
-    pub fn get_u8(&self, addr: usize) -> Option<u8> {
+    pub fn get_u8(&mut self, addr: usize) -> u8 {
         unsafe { self.get::<u8, 0>(addr) }
     }
 
-    pub fn get_u32(&self, addr: Aligned<4>) -> Option<u32> {
+    pub fn get_u32(&mut self, addr: Aligned<4>) -> u32 {
         unsafe { self.get::<u32, 2>(addr.0) }
     }
 
-    pub fn get_u64(&self, addr: Aligned<8>) -> Option<u64> {
+    pub fn get_u64(&mut self, addr: Aligned<8>) -> u64 {
         unsafe { self.get::<u64, 3>(addr.0) }
     }
 }
 
-/// a mask with low N bits set to 1 and the rest 0
-const fn mask_lo<const N: u32>() -> usize {
-    (1 << N) - 1
-}
-/// a mask with low N bits set to 0 and the rest 1
-const fn not_mask_lo<const N: u32>() -> usize {
-    !mask_lo::<N>()
-}
-/// a mask with high N bits set to 1 and the rest 0
-const fn mask_hi<const N: u32>() -> usize {
-    usize::MAX >> N
+pub struct PageRangeIter<'a> {
+    pages: &'a HashMap<usize, Page>,
+    idx: usize,
+    end_idx: usize,
 }
 
+impl<'a> PageRangeIter<'a> {
+    fn new(bin: &'a SparseBin, start_idx: usize, end_idx: usize) -> Self {
+        debug_assert!(start_idx <= end_idx);
+        Self {
+            pages: &bin.pages,
+            idx: start_idx,
+            end_idx,
+        }
+    }
+}
+impl<'a> Iterator for PageRangeIter<'a> {
+    type Item = &'a [u8; PAGE_SIZE];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.end_idx {
+            None
+        } else {
+            let page = match self.pages.get(&self.idx) {
+                Some(page) => &page.0,
+                None => &ZERO_PAGE.0,
+            };
+            self.idx += 1;
+            Some(page)
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+impl ExactSizeIterator for PageRangeIter<'_> {
+    fn len(&self) -> usize {
+        self.end_idx - self.idx
+    }
+}
+impl FusedIterator for PageRangeIter<'_> {}
+
 /// `value == ((value >> N)) << N) | extract_lo::<N>(value))`
-const fn extract_lo<const N: u32>(value: usize) -> usize {
-    value & mask_lo::<N>()
+fn extract_lo<const N: u32>(value: usize) -> usize {
+    value & usize::mask_lo_1s(N)
 }
 
 const fn log2(n: u64) -> u32 {
@@ -174,10 +305,10 @@ mod tests {
         bin.write_u8(1, 0x34);
         bin.write_u8(2, 0x56);
         bin.write_u8(3, 0x78);
-        assert_eq!(bin.get_u8(0), Some(0x12));
-        assert_eq!(bin.get_u8(1), Some(0x34));
-        assert_eq!(bin.get_u8(2), Some(0x56));
-        assert_eq!(bin.get_u8(3), Some(0x78));
+        assert_eq!(bin.get_u8(0), 0x12);
+        assert_eq!(bin.get_u8(1), 0x34);
+        assert_eq!(bin.get_u8(2), 0x56);
+        assert_eq!(bin.get_u8(3), 0x78);
     }
 
     #[test]
@@ -187,10 +318,10 @@ mod tests {
         bin.write_u8(0x100000000, 0x4);
         bin.write_u8(0x100000001, 0x84);
         bin.write_u8(1, 0x11);
-        assert_eq!(bin.get_u8(0), Some(0x23));
-        assert_eq!(bin.get_u8(0x100000000), Some(0x4));
-        assert_eq!(bin.get_u8(0x100000001), Some(0x84));
-        assert_eq!(bin.get_u8(1), Some(0x11));
+        assert_eq!(bin.get_u8(0), 0x23);
+        assert_eq!(bin.get_u8(0x100000000), 0x4);
+        assert_eq!(bin.get_u8(0x100000001), 0x84);
+        assert_eq!(bin.get_u8(1), 0x11);
     }
 
     #[test]
@@ -200,18 +331,44 @@ mod tests {
         bin.write_u64(Aligned::new(8).unwrap(), 0xD800);
         bin.write_u64(Aligned::new(0x100000000).unwrap(), 0xabd18238);
         bin.write_u64(Aligned::new(0x100000010).unwrap(), 0x111111190abcdef);
-        assert_eq!(
-            bin.get_u64(Aligned::new(0).unwrap()),
-            Some(0x1234567890abcdef)
-        );
-        assert_eq!(
-            bin.get_u64(Aligned::new(0x100000000).unwrap()),
-            Some(0xabd18238)
-        );
-        assert_eq!(bin.get_u64(Aligned::new(8).unwrap()), Some(0xD800));
+        assert_eq!(bin.get_u64(Aligned::new(0).unwrap()), 0x1234567890abcdef);
+        assert_eq!(bin.get_u64(Aligned::new(0x100000000).unwrap()), 0xabd18238);
+        assert_eq!(bin.get_u64(Aligned::new(8).unwrap()), 0xD800);
         assert_eq!(
             bin.get_u64(Aligned::new(0x100000010).unwrap()),
-            Some(0x111111190abcdef)
+            0x111111190abcdef
         );
+    }
+
+    #[test]
+    fn page_range_iter() {
+        let bin = SparseBin::new();
+        let (first, mut iter, last) = bin.page_range_u8(0..0);
+        assert_eq!(first.len(), 0);
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next(), None);
+        assert_eq!(last.len(), 0);
+    }
+    #[test]
+    fn page_range_iter_len() {
+        let bin = SparseBin::new();
+        let start = 10 << PAGE_BITS;
+        let end = 20 << PAGE_BITS;
+        let (first, iter, last) = bin.page_range_u8(start..end);
+        assert_eq!(first.len(), 0);
+        assert_eq!(iter.len(), 10);
+        assert_eq!(last.len(), 0);
+    }
+    #[test]
+    fn page_range_iter_next() {
+        let bin = SparseBin::new();
+        let start = 1 << PAGE_BITS;
+        let end = 2 << PAGE_BITS;
+        let (first, mut iter, last) = bin.page_range_u8(start..end);
+        assert_eq!(first.len(), 0);
+        assert_eq!(iter.len(), 1);
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_none());
+        assert_eq!(last.len(), 0);
     }
 }

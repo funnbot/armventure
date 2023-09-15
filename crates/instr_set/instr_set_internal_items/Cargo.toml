@@ -1,5 +1,5 @@
 [package]
-name = "keywrd"
+name = "instr_set_internal_items"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -9,4 +9,3 @@ publish = false
 [dependencies]
 
 [lib]
-proc-macro = true

@@ -1,0 +1,1 @@
+cargo +nightly doc --document-private-items --lib --no-deps

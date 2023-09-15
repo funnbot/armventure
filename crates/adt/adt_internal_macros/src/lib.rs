@@ -1,4 +1,6 @@
 #![feature(proc_macro_diagnostic)]
+// TODO: temporary
+#![allow(warnings)]
 
 extern crate proc_macro;
 use proc_macro::{Delimiter, Group, Ident, Punct, Span, TokenStream, TokenTree};
@@ -81,9 +83,7 @@ fn parse_item(stream: TokenStream) -> Adt {
                 },
                 _ => {}
             },
-            TokenTree::Ident(ident) => {
-                
-            }
+            TokenTree::Ident(ident) => {}
             _ => {}
         }
     }

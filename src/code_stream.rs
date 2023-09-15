@@ -1,16 +1,16 @@
 use crate::batch_assert_matches;
-use crate::code_file::{CodeLoc, CodeSpan};
+use crate::code::{Loc, Span};
 use crate::stream::{MultiPeek, Stream};
 use std::ascii::Char as Ascii;
 
-pub(crate) struct SourceIterator<'s> {
+pub(crate) struct SourceStream<'s> {
     pub inner: std::str::CharIndices<'s>,
     pub current: Option<char>,
-    pub location: CodeLoc,
+    pub location: Loc,
     pub index: usize,
 }
 
-impl<'s> Stream for SourceIterator<'s> {
+impl<'s> Stream for SourceStream<'s> {
     type Item = char;
 
     fn peek(&self) -> Option<&char> {
@@ -31,7 +31,7 @@ impl<'s> Stream for SourceIterator<'s> {
     }
 }
 
-impl<'s> MultiPeek for SourceIterator<'s> {
+impl<'s> MultiPeek for SourceStream<'s> {
     fn peek_by(&self, n: usize) -> Option<char> {
         if n == 0 {
             self.peek().copied()
@@ -41,14 +41,14 @@ impl<'s> MultiPeek for SourceIterator<'s> {
     }
 }
 
-impl<'a> SourceIterator<'a> {
+impl<'a> SourceStream<'a> {
     pub fn new(source: &'a str) -> Self {
         let mut inner = source.char_indices();
         let current = inner.next().map(|i| i.1);
         Self {
             inner,
             current,
-            location: CodeLoc::new(),
+            location: Loc::new(),
             index: 0,
         }
     }
@@ -81,11 +81,11 @@ mod tests {
             4, 4,
         ];
         let a: Option<usize> = None;
-        let mut iter = SourceIterator::new(src);
+        let mut iter = SourceStream::new(src);
         for (i, e) in exp.iter().enumerate() {
             assert_eq!(
                 *e,
-                iter.location.line.get() as usize,
+                iter.location.line() as usize,
                 "char[{}]: {}",
                 i,
                 iter.peek().unwrap().escape_default()
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn peek_by() -> Probably {
-        let mut s = SourceIterator::new("01234567");
+        let mut s = SourceStream::new("01234567");
         batch_assert_matches! {
             s.next()? => '0',
             s.next()? => '1',
